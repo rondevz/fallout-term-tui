@@ -15,7 +15,7 @@ import (
 
 const (
 	// Layout constants
-	GRID_LINES            = 17 // How many lines in the grid display
+	GRID_LINES            = 30 // How many lines in the grid display
 	CHARS_PER_GRID_COLUMN = 12 // How many characters per *visual* column
 	NUM_GRID_COLUMNS      = 2  // We want two columns of characters side-by-side
 	TOTAL_CHARS_PER_LINE  = CHARS_PER_GRID_COLUMN * NUM_GRID_COLUMNS
@@ -41,7 +41,6 @@ var (
 
 	// Style for the whole view box - ENSURE BACKGROUND COVERS ALL
 	viewStyle = lipgloss.NewStyle().
-			Background(darkGreen).
 			Foreground(lightGreen). // Default text color for the view
 			Padding(0, 1)
 
@@ -200,22 +199,32 @@ func overlaps(start, end int, selectables *[]Selectable) bool {
 }
 
 func placeWords(grid []rune, words []string, selectables *[]Selectable, width int) {
+	// width here is TOTAL_CHARS_PER_LINE
+	charsPerCol := CHARS_PER_GRID_COLUMN // Get the visual column width
+
 	for _, word := range words {
 		placed := false
 		attempts := 0
-		maxAttempts := 200 // Increase attempts for denser grids
+		maxAttempts := 300 // Maybe increase attempts slightly
 
 		for !placed && attempts < maxAttempts {
 			attempts++
 			startIdx := rand.Intn(len(grid) - len(word))
 			endIdx := startIdx + len(word) - 1
 
-			// Check 1: Does it wrap around the logical line?
+			// Check 1: Does it wrap around the LOGICAL line? (Existing check)
 			if (startIdx / width) != (endIdx / width) {
-				continue // Wraps line, invalid position
+				continue // Wraps logical line, invalid position
 			}
 
-			// Check 2: Does it overlap existing selectables?
+			// Check 2: Does it wrap around a VISUAL column boundary? (NEW CHECK)
+			startVisualCol := (startIdx % width) / charsPerCol
+			endVisualCol := (endIdx % width) / charsPerCol
+			if startVisualCol != endVisualCol {
+				continue // Wraps visual column, invalid position
+			}
+
+			// Check 3: Does it overlap existing selectables? (Existing check)
 			if overlaps(startIdx, endIdx, selectables) {
 				continue // Overlaps, try again
 			}
@@ -239,17 +248,19 @@ func placeWords(grid []rune, words []string, selectables *[]Selectable, width in
 }
 
 func placeBrackets(grid []rune, count int, selectables *[]Selectable, width int) {
+	// width here is TOTAL_CHARS_PER_LINE
+	charsPerCol := CHARS_PER_GRID_COLUMN // Get the visual column width
 	bracketPairs := []string{"()", "[]", "{}", "<>"}
 	placedCount := 0
 	attempts := 0
-	maxAttempts := 500 // More attempts needed potentially
+	maxAttempts := 500
 
 	for placedCount < count && attempts < maxAttempts {
 		attempts++
 		pair := bracketPairs[rand.Intn(len(bracketPairs))]
 		openBracket, closeBracket := rune(pair[0]), rune(pair[1])
 
-		// Find a random potential start position for the opening bracket
+		// Find a random potential start position
 		startIdx := rand.Intn(len(grid))
 
 		// Make sure start position isn't already part of something
@@ -257,20 +268,32 @@ func placeBrackets(grid []rune, count int, selectables *[]Selectable, width int)
 			continue
 		}
 
-		// Search forward for a suitable closing position on the same line
+		// Check if start is within a valid visual column boundary (optional but good practice)
+		// Note: A single char cannot cross a boundary itself, but ensures we calculate startVisualCol correctly.
+		startVisualCol := (startIdx % width) / charsPerCol
+
+		// Search forward for a suitable closing position on the same logical line
 		lineStart := (startIdx / width) * width
 		lineEnd := lineStart + width - 1
 		foundEnd := -1
 		searchAttempts := 0
-		maxSearchDist := width / 2 // Limit search distance for closing bracket
+		maxSearchDist := width / 2 // Limit search distance
 
 		for currentPos := startIdx + 1; currentPos <= lineEnd && searchAttempts < maxSearchDist; currentPos++ {
 			searchAttempts++
+
 			// Check if position is suitable for closing bracket
 			if !overlaps(currentPos, currentPos, selectables) && grid[currentPos] != openBracket && grid[currentPos] != closeBracket {
-				// Potential end position, check if it's far enough
-				// (e.g., > 2 chars away to look like a real pair)
-				if currentPos > startIdx+2 {
+
+				// CHECK VISUAL COLUMN for the potential end position (NEW CHECK)
+				endVisualCol := (currentPos % width) / charsPerCol
+				if startVisualCol != endVisualCol {
+					// This potential end position is in a different visual column, skip it
+					continue
+				}
+
+				// Potential end position is valid and in the same visual column
+				if currentPos > startIdx+2 { // Ensure some distance
 					foundEnd = currentPos
 					break
 				}
@@ -278,7 +301,7 @@ func placeBrackets(grid []rune, count int, selectables *[]Selectable, width int)
 		}
 
 		if foundEnd != -1 {
-			// We found a potential pair location!
+			// We found a potential pair location in the same visual column!
 			// Double check overlap for the closing bracket just to be safe
 			if overlaps(foundEnd, foundEnd, selectables) {
 				continue
@@ -292,7 +315,7 @@ func placeBrackets(grid []rune, count int, selectables *[]Selectable, width int)
 			*selectables = append(*selectables, Selectable{
 				Value:      pair,
 				StartIndex: startIdx,
-				EndIndex:   foundEnd, // Note: EndIndex for brackets might just be the closer index
+				EndIndex:   foundEnd,
 				IsWord:     false,
 			})
 			placedCount++
